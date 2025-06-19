@@ -1,0 +1,20 @@
+streamlit>=1.28.0
+langchain>=0.1.0
+langchain-openai>=0.1.0
+langchain-tavily>=0.1.0
+openai>=1.0.0
+sqlalchemy>=2.0.0
+pymysql>=1.0.0
+azure-cognitiveservices-vision-computervision>=0.9.0
+msrest>=0.7.0
+pandas>=2.0.0
+plotly>=5.15.0
+scikit-learn>=1.3.0
+requests>=2.31.0
+feedparser>=6.0.0
+python-dateutil>=2.8.0
+python-dotenv>=1.0.0
+
+# 선택적 패키지 (현재 미사용)
+# matplotlib>=3.7.0        # 정적 차트 (plotly로 대체됨)
+# pytrends>=4.9.0          # Google Trends (feedparser로 대체됨)
