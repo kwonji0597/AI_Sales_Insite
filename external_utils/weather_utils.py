@@ -1,7 +1,7 @@
 # OpenWeather API 연동
 
 import requests
-import config
+# import config
 
 # 날씨정보 수집(사용안함 - Tavily API를 통해 날씨 정보 수집)
 def get_weather_forecast(city="Seoul", target_date=None):
