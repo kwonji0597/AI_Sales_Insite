@@ -20,16 +20,6 @@ from pipelines.vision_pipeline import (
     get_recent_classifications
 )
 
-# 1. 세션 상태 안전하게 초기화 (app.py 상단에 추가)
-if 'weather_result' not in st.session_state:
-    st.session_state.weather_result = None
-if 'trend_result' not in st.session_state:
-    st.session_state.trend_result = None
-if 'strategy_result' not in st.session_state:
-    st.session_state.strategy_result = None
-if 'inventory_info' not in st.session_state:
-    st.session_state.inventory_info = {}
-
 # 환경변수 로드
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -42,6 +32,37 @@ engine = create_db_engine()
 llm = ChatOpenAI(model_name="gpt-4o", openai_api_key=OPENAI_API_KEY, temperature=0.3)
 tavily = TavilySearch(api_key=TAVILY_API_KEY) if TAVILY_API_KEY else None
 embedding_model = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=OPENAI_API_KEY)
+
+
+
+
+# 기존 세션 상태 초기화를 더 안전하게 수정
+def safe_init_session_state():
+    """안전한 세션 상태 초기화"""
+    
+    # 기본 세션 상태들
+    session_defaults = {
+        'weather_result': None,
+        'trend_result': None,
+        'strategy_result': None,
+        'inventory_info': {},
+        'last_tool_used': None,
+        'tool_execution_status': None,
+        'agent_running': False,  # 🆕 Agent 실행 상태
+        'last_question': "",     # 🆕 마지막 질문 저장
+        'ui_initialized': False  # 🆕 UI 초기화 상태
+    }
+    
+    # 안전하게 세션 상태 초기화
+    for key, default_value in session_defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
+
+# 🔧 기존 세션 상태 초기화 부분을 이것으로 교체
+safe_init_session_state()
+
+
+
 
 # 유틸리티 함수들
 def get_weather_and_trends(user_question: str):
@@ -127,7 +148,60 @@ def product_name_extract(user_question: str, weather_info: str, trend_info: str,
     cleaned_gpt_product_names = [re.sub(r"^[0-9]+[\.)]?\s*", "", name).replace(" ", "") for name in raw_product_names]
 
     return inventory_match_via_embedding(cleaned_gpt_product_names)
-   
+
+
+# 🔧 전략 생성 함수 개선 (기존 함수는 유지하고 새로 추가)  ㄹ''
+def generate_strategic_enhanced(user_question: str, weather_info: str, trend_info: str, inventory_infos: dict):
+    inventory_lines = []
+    for gpt_name, db_matches in inventory_infos.items():
+        if db_matches:
+            for db_name, qty in db_matches:
+                inventory_lines.append(f"{db_name} (재고: {qty}개)")
+        else:
+            inventory_lines.append(f"{gpt_name} (재고: 0개)")       
+                                
+    inventory_text = "\n".join(inventory_lines)
+
+    return f"""
+            너는 경험이 풍부한 홈쇼핑 방송 상품 기획 전문가이자 마케팅 전략가야.
+            
+            **분석 요청**: '{user_question}'
+            
+            **현재 상황 정보**:
+            🌦️ 날씨 정보: {weather_info}
+            📈 트렌드 정보: {trend_info}
+            
+            **재고 현황**:
+            {inventory_text}
+            
+            위 정보를 종합하여 다음 형식으로 구체적인 홈쇼핑 방송 전략을 작성해줘:
+            
+            ## 🎯 핵심 전략 요약
+            [3줄 요약]
+            
+            ## 📺 추천 방송 상품 (우선순위순)
+            1. **상품명**: [이유와 함께]
+            2. **상품명**: [이유와 함께]
+            3. **상품명**: [이유와 함께]
+            
+            ## 💡 마케팅 포인트
+            - 날씨 연계: [날씨를 활용한 마케팅 메시지]
+            - 트렌드 연계: [트렌드를 활용한 마케팅 메시지]
+            - 고객 니즈: [예상되는 고객 니즈와 대응 방안]
+            
+            ## 📊 방송 전략
+            - **타이밍**: [최적 방송 시간대와 이유]
+            - **타겟**: [주요 타겟 고객층]
+            - **메시지**: [핵심 판매 메시지]
+            - **번들링**: [함께 판매하면 좋은 상품 조합]
+            
+            ## ⚠️ 주의사항
+            - [재고 부족 상품 대안]
+            - [경쟁사 대비 차별화 포인트]
+            - [리스크 요소와 대응 방안]
+            """
+
+
 def generate_strategic(user_question: str, weather_info: str, trend_info: str, inventory_infos: dict):
     inventory_lines = []
     for gpt_name, db_matches in inventory_infos.items():
@@ -327,12 +401,12 @@ with tabs[1]:
                         st.error(f"분류 중 오류: {e}")
             
             # DB 저장 버튼 (분류 결과가 있을 때만 표시)
-            if 'last_result' in st.session_state and st.session_state.last_result.get('db_ready'):
+            if 'last_result' in st.session_state and st.session_state.last_result:
+
+                result = st.session_state.last_result
                 st.markdown("---")
                 
                 if st.button("💾 DB에 저장", type="secondary"):
-                    result = st.session_state.last_result
-                    
                     with st.spinner("DB 저장 중..."):
                         # DB에 저장
                         save_result = save_classification_to_db(
@@ -345,14 +419,13 @@ with tabs[1]:
                             result['tags']
                         )
                         
-                        if save_result["success"]:
-                            st.success(f"✅ {save_result['message']}")
-                            # 저장 후 결과 클리어
-                            if 'last_result' in st.session_state:
-                                del st.session_state.last_result
+                        if save_result.get("success"):
+                            st.success(f"✅ 저장 완료: {save_result['message']}")
+                            # 🔄 상태 초기화 및 새로고침 권장
+                            del st.session_state['last_result']
                             st.rerun()
                         else:
-                            st.error(f"❌ {save_result['error']}")
+                            st.error(f"❌ 저장 실패: {save_result.get('error', 'Unknown error')}")
 
     # 최근 분류 히스토리 (간단 버전)
     if st.checkbox("📈 최근 분류 결과 보기"):
@@ -367,103 +440,195 @@ with tabs[1]:
 
 ###########################################################
 # Agent 오류 수정 - tabs[2] 전체 재구현
-
 ###########################################################
 from langchain.agents import Tool, initialize_agent
 from langchain.agents.agent_types import AgentType
 
-# 간단하고 직접적인 Tool 함수들
-
 def weather_tool(query):
     """날씨 정보를 조회하는 도구"""
     try:
+        # 🔧 안전한 상태 업데이트
+        if 'last_tool_used' in st.session_state:
+            st.session_state.last_tool_used = "weather"
+        if 'tool_execution_status' in st.session_state:
+            st.session_state.tool_execution_status = "running"
+
         weather_info, trend_info = get_weather_and_trends(query)
         
-        # 날씨 정보 요약 처리
-        if weather_info and len(str(weather_info)) > 200:
+        # 🔧 개선: 더 구체적인 날씨 정보 처리
+        if weather_info and len(str(weather_info)) > 50:  # 길이 조건 완화
             try:
                 weather_summary_prompt = f"""
-                다음 날씨 정보를 간단히 요약해주세요:
-                {weather_info}
+                다음 날씨 정보를 상품 기획 담당자에게 도움이 되도록 구체적으로 정리해주세요:
                 
-                형식:
-                날짜: 
-                기온: 
-                날씨: 
+                원본 정보: {weather_info}
+                
+                다음 형식으로 상세하게 작성해주세요:
+                
+                📅 **날짜**: [정확한 날짜]
+                🌡️ **기온**: [최고/최저 기온, 체감온도]
+                ☀️ **날씨**: [맑음/흐림/비/눈 등 상세 상태]
+                💧 **강수확률**: [확률과 강수량]
+                💨 **바람**: [풍속과 풍향]
+                🌈 **기타**: [습도, 자외선지수, 미세먼지 등]
+                
+                📊 **상품 기획 관련 인사이트**:
+                - 이 날씨에 잘 팔릴 수 있는 상품 유형
+                - 주의해야 할 날씨 요소
+                - 마케팅 포인트 제안
                 """
                 weather_summary = llm.invoke(weather_summary_prompt)
                 weather_info = weather_summary.content
             except:
-                weather_info = str(weather_info)[:300] + "..."
+                # 요약 실패시 원본 정보 사용하되 길이만 제한
+                weather_info = str(weather_info)[:500] + "..."
         
-        # 🔧 수정: 안전한 세션 상태 업데이트
-        st.session_state.weather_result = str(weather_info) if weather_info else "날씨 정보 없음"
-        st.session_state.trend_result = str(trend_info) if trend_info else "트렌드 정보 없음"
+        # 🔧 안전한 세션 상태 저장
+        if 'weather_result' in st.session_state:
+            st.session_state.weather_result = str(weather_info) if weather_info else "날씨 정보 없음"
+        if 'trend_result' in st.session_state:
+            st.session_state.trend_result = str(trend_info) if trend_info else "트렌드 정보 없음"
         
-        return "WEATHER_SUCCESS"
+        # 성공 상태 기록
+        if 'tool_execution_status' in st.session_state:
+            st.session_state.tool_execution_status = "success"
+        
+        return "날씨 정보를 조회했습니다."
     
     except Exception as e:
-        print(f"weather_tool 오류: {e}")
-        # 🔧 추가: 오류 시에도 세션 상태 안전하게 설정
-        st.session_state.weather_result = f"날씨 조회 실패: {str(e)}"
-        st.session_state.trend_result = "트렌드 정보 없음"
-        return f"WEATHER_ERROR: {str(e)}"    
-    
+        print(f"safe_weather_tool 오류: {e}")
+        # 안전한 오류 처리
+        if 'weather_result' in st.session_state:
+            st.session_state.weather_result = "날씨 조회 실패"
+        if 'tool_execution_status' in st.session_state:
+            st.session_state.tool_execution_status = "error"
+        
+        return f"날씨 정보 조회 중 오류가 발생했습니다."
 
 def trend_tool(query):
-    """날씨 정보를 조회하는 도구"""
+    """트렌드 정보를 조회하는 도구"""
     try:
+        # 안전한 상태 업데이트
+        if 'last_tool_used' in st.session_state:
+            st.session_state.last_tool_used = "trend"
+        if 'tool_execution_status' in st.session_state:
+            st.session_state.tool_execution_status = "running"
+
         weather_info, trend_info = get_weather_and_trends(query)
         
-        # 날씨 정보 요약 처리
-        if trend_info and len(str(trend_info)) > 200:
+        # 🔧 개선: 더 구체적인 트렌드 정보 처리
+        if trend_info and len(str(trend_info)) > 50:  # 길이 조건 완화
             try:
                 trend_summary_prompt = f"""
-                다음 트렌드 정보를 간단히 요약해주세요:
-                {trend_info} 
+                다음 트렌드 정보를 홈쇼핑 상품 기획에 활용할 수 있도록 구체적으로 분석해주세요:
+                
+                원본 정보: {trend_info}
+                
+                다음 형식으로 상세하게 작성해주세요:
+                
+                🔥 **인기 트렌드 키워드 TOP 5**:
+                1. [키워드1] - [관련 설명]
+                2. [키워드2] - [관련 설명]
+                3. [키워드3] - [관련 설명]
+                4. [키워드4] - [관련 설명]
+                5. [키워드5] - [관련 설명]
+                
+                📈 **트렌드 분석**:
+                - 급상승 검색어와 이유
+                - 계절성/시기적 요인
+                - 연령대별 관심사
+                
+                💡 **상품 기획 활용 방안**:
+                - 이 트렌드를 활용한 상품 추천
+                - 마케팅 메시지 제안
+                - 타겟 고객층 분석
+                - 판매 전략 아이디어
+                
+                ⚠️ **주의사항**:
+                - 일시적 vs 지속적 트렌드 구분
+                - 경쟁 상황 고려사항
                 """
                 trend_summary = llm.invoke(trend_summary_prompt)
                 trend_info = trend_summary.content
             except:
-                trend_info = str(trend_info)[:300] + "..."
+                # 요약 실패시 원본 정보 사용하되 길이만 제한
+                trend_info = str(trend_info)[:500] + "..."
         
-        # 🔧 수정: 안전한 세션 상태 업데이트
-        st.session_state.weather_result = str(weather_info) if weather_info else "날씨 정보 없음"
-        st.session_state.trend_result = str(trend_info) if trend_info else "트렌드 정보 없음"
+        # 안전한 세션 상태 저장
+        if 'weather_result' in st.session_state:
+            st.session_state.weather_result = str(weather_info) if weather_info else "날씨 정보 없음"
+        if 'trend_result' in st.session_state:
+            st.session_state.trend_result = str(trend_info) if trend_info else "트렌드 정보 없음"
         
-        return "TREND_SUCCESS"
+        # 성공 상태 기록
+        if 'tool_execution_status' in st.session_state:
+            st.session_state.tool_execution_status = "success"
+        
+        return "트렌드 정보를 분석했습니다."
     
     except Exception as e:
-        print(f"trend_tool 오류: {e}")
-        # 🔧 추가: 오류 시에도 세션 상태 안전하게 설정
-        st.session_state.weather_result = f"날씨 조회 실패: {str(e)}"
-        st.session_state.trend_result = "트렌드 정보 없음"
-        return f"TREND_ERROR: {str(e)}"    
+        print(f"safe_trend_tool 오류: {e}")
+        if 'trend_result' in st.session_state:
+            st.session_state.trend_result = "트렌드 분석 실패"
+        if 'tool_execution_status' in st.session_state:
+            st.session_state.tool_execution_status = "error"
+        
+        return f"트렌드 정보 분석 중 오류가 발생했습니다."
 
-
-
+# 🔧 전략 도구도 소폭 개선
 def strategy_tool(query):
     """상품 전략을 생성하는 도구"""
     try:
+
+        # 안전한 상태 업데이트
+        if 'last_tool_used' in st.session_state:
+            st.session_state.last_tool_used = "strategy"
+        if 'tool_execution_status' in st.session_state:
+            st.session_state.tool_execution_status = "running"
+
         weather_info, trend_info = get_weather_and_trends(query)
         inventory_info = product_name_extract(query, weather_info, trend_info, 0.35)
-        final_prompt = generate_strategic(query, weather_info, trend_info, inventory_info)
+        
+        # 🔧 소폭 개선: 더 구체적인 전략 프롬프트
+        final_prompt = generate_strategic_enhanced(query, weather_info, trend_info, inventory_info)
         response = llm.invoke(final_prompt)
         
-        # 🔧 수정: 안전한 세션 상태 업데이트
-        st.session_state.strategy_result = str(response.content) if response.content else "전략 생성 실패"
-        st.session_state.inventory_info = inventory_info if inventory_info else {}
-        st.session_state.weather_info = str(weather_info) if weather_info else "날씨 정보 없음"
-        st.session_state.trend_info = str(trend_info) if trend_info else "트렌드 정보 없음"
+        # 안전한 세션 상태 저장
+        if 'strategy_result' in st.session_state:
+            st.session_state.strategy_result = str(response.content) if response and response.content else "전략 생성 실패"
+        if 'inventory_info' in st.session_state:
+            st.session_state.inventory_info = inventory_info if inventory_info else {}
+        if 'weather_info' in st.session_state:
+            st.session_state.weather_info = str(weather_info) if weather_info else "날씨 정보 없음"
+        if 'trend_info' in st.session_state:
+            st.session_state.trend_info = str(trend_info) if trend_info else "트렌드 정보 없음"
         
-        return "STRATEGY_SUCCESS"
+        # 성공 상태 기록
+        if 'tool_execution_status' in st.session_state:
+            st.session_state.tool_execution_status = "success"
+        
+        return "상품 판매 전략을 생성했습니다."
+        
+    except Exception as e:
+        print(f"safe_strategy_tool 오류: {e}")
+        if 'strategy_result' in st.session_state:
+            st.session_state.strategy_result = f"전략 생성 실패: {str(e)}"
+        if 'inventory_info' in st.session_state:
+            st.session_state.inventory_info = {}
+        if 'tool_execution_status' in st.session_state:
+            st.session_state.tool_execution_status = "error"
+        
+        return f"상품 전략 생성 중 오류가 발생했습니다."
         
     except Exception as e:
         print(f"strategy_tool 오류: {e}")
-        # 🔧 추가: 오류 시에도 세션 상태 안전하게 설정
         st.session_state.strategy_result = f"전략 생성 실패: {str(e)}"
         st.session_state.inventory_info = {}
-        return f"STRATEGY_ERROR: {str(e)}"
+        
+        # 🆕 실패 상태 기록
+        st.session_state.tool_execution_status = "error"
+        
+        return f"상품 전략 생성 중 오류가 발생했습니다: {str(e)}"
 
 # 간단한 Tool 등록
 tools = [
@@ -484,20 +649,31 @@ tools = [
     )
 ]
 
-# 간단한 Agent 초기화
-try:
-    agent = initialize_agent(
-        tools,
-        llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        verbose=False,  # 로그 출력 최소화
-        max_iterations=1,  # 최대 1번만 실행
-        early_stopping_method="force",  # 강제 종료
-        handle_parsing_errors=True
-    )
-except Exception as e:
-    st.error(f"Agent 초기화 실패: {e}")
-    agent = None
+# 🔧 Agent 설정 변경 - 더 안정적으로
+def safe_init_agent():
+    """안전한 Agent 초기화"""
+    try:
+        agent = initialize_agent(
+            tools,
+            llm,
+            agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+            verbose=False,
+            max_iterations=2,
+            early_stopping_method="generate",
+            handle_parsing_errors=True,
+            return_intermediate_steps=False  # 🆕 중간 단계 반환 비활성화
+        )
+        print("✅ 안전한 Agent 초기화 완료")
+        return agent
+    except Exception as e:
+        print(f"❌ Agent 초기화 실패: {e}")
+        return None
+
+# 기존 agent 초기화를 안전한 버전으로 교체
+agent = safe_init_agent()
+
+
+
 
 # 질문 유형 자동 판별 함수
 def classify_question(question):
@@ -541,51 +717,96 @@ with tabs[2]:
     if st.button("🚀 AI Agent 실행", type="primary") and user_question:
         with st.spinner("AI Agent가 작업 중입니다..."):
             
-            # 🔧 개선: 질문 유형 미리 판별하여 직접 도구 호출
-            question_type = classify_question(user_question)
-            
             try:
-                if question_type == "weather":
-                    # 날씨 도구 직접 호출
-                    result = weather_tool(user_question)
-                elif question_type == "trend":
-                    # 날씨 도구 직접 호출
-                    result = trend_tool(user_question)             
+                # 🔧 개선: Agent 실행 전 상태 초기화
+                st.session_state.last_tool_used = None
+                st.session_state.tool_execution_status = None
+                
+                # 🤖 LangChain Agent 실행
+                result = agent.run(user_question)
+                print(f"Agent 결과: {result}")
+                print(f"사용된 도구: {st.session_state.last_tool_used}")
+                print(f"실행 상태: {st.session_state.tool_execution_status}")
+                
+                # 🔧 핵심 개선: 실제 사용된 도구에 따라 UI 분기 처리
+                if st.session_state.last_tool_used == "weather" and st.session_state.tool_execution_status == "success":
+                    # 🌤️ 날씨 도구가 성공적으로 실행된 경우
+                    col1, col2 = st.columns([1, 2])
                     
-                else:  # strategy
-                    # 전략 도구 직접 호출
-                    result = strategy_tool(user_question)
-                
-                print(f"Direct Tool 결과: {result}")
-                
-                # 🔧 결과에 따른 UI 표시
-
-                if result == "WEATHER_SUCCESS":
-                    st.subheader("🌦️ 상세 날씨 정보")                    
-                    # 🔧 수정: 안전한 세션 상태 확인
-                    weather_result = st.session_state.get('weather_result', '날씨 정보 없음')
-                    if weather_result and weather_result != '날씨 정보 없음':
-                        st.markdown("**날씨 정보:**")
-                        st.text(weather_result)  # markdown 대신 text 사용 (더 안전)
+                    with col1:
+                        st.subheader("🌤️ 날씨 분석 요약")
+                        # st.success("✅ 날씨 정보 조회 완료")
+                        # st.info("🤖 AI가 상품 기획에 맞게 날씨를 분석했습니다.")
                         
-                elif result == "TREND_SUCCESS":
-                    st.subheader("🌦️ 트렌드 정보")
-                    trend_result = st.session_state.get('trend_result', '트렌드 정보 없음')
-                    if trend_result and trend_result != '트렌드 정보 없음':
-                        st.markdown("**관련 트렌드:**")
-                        # 트렌드 정보 길이 제한
-                        if len(trend_result) > 300:
-                            trend_result = trend_result[:300] + "..."
-                        st.text(trend_result)
+                        # 🆕 날씨 지표 표시
+                        if 'weather_result' in st.session_state:
+                            weather_text = st.session_state.weather_result
+                            if "비" in weather_text or "강수" in weather_text:
+                                st.metric("☔", "우천 예상", "우산/우비 수요 ↑")
+                            elif "맑" in weather_text or "화창" in weather_text:
+                                st.metric("☀️", "맑음 예상", "야외활동 상품 수요 ↑")
+                            elif "추위" in weather_text or "한파" in weather_text:
+                                st.metric("🥶", "추위 예상", "방한 상품 수요 ↑")
+                            elif "더위" in weather_text or "폭염" in weather_text:
+                                st.metric("🔥", "더위 예상", "쿨링 상품 수요 ↑")
+                    
+                    with col2:
+                        st.subheader("🌦️ 상세 날씨 정보 및 상품 기획 인사이트")
+                        
+                        weather_result = st.session_state.get('weather_result', '날씨 정보 없음')
+                        if weather_result and weather_result != '날씨 정보 없음':
+                            st.markdown(weather_result)
+                        else:
+                            st.info("상세한 날씨 정보를 가져올 수 없습니다.")
+                    
+                    # 🆕 Agent 응답도 함께 표시
+                    st.markdown("---")
+                    st.subheader("🤖 AI Agent 응답")
+                    st.info(result)
 
-                elif result == "STRATEGY_SUCCESS":
-                    col1, col2 = st.columns([1, 2])                    
+                elif st.session_state.last_tool_used == "trend" and st.session_state.tool_execution_status == "success":
+                    # 📈 트렌드 도구가 성공적으로 실행된 경우
+                    col1, col2 = st.columns([1, 2])
+                    
+                    with col1:
+                        st.subheader("📊 트렌드 분석 요약")
+                        # st.success("✅ 트렌드 정보 조회 완료")
+                        # st.info("🤖 AI가 홈쇼핑에 맞게 트렌드를 분석했습니다.")
+                        
+                        # 🆕 트렌드 지표 표시
+                        if 'trend_result' in st.session_state:
+                            trend_text = st.session_state.trend_result
+                            if "급상승" in trend_text:
+                                st.metric("🚀", "급상승 트렌드", "빠른 대응 필요")
+                            if "인기" in trend_text or "HOT" in trend_text:
+                                st.metric("🔥", "인기 트렌드", "마케팅 포인트 활용")
+                            if "세대" in trend_text or "연령" in trend_text:
+                                st.metric("👥", "세대별 트렌드", "타겟팅 전략 수립")
+
+                    with col2:
+                        st.subheader("📈 상세 트렌드 정보 및 상품 기획 활용")
+                        
+                        trend_result = st.session_state.get('trend_result', '트렌드 정보 없음')
+                        if trend_result and trend_result != '트렌드 정보 없음':
+                            st.markdown(trend_result)
+                        else:
+                            st.info("상세한 트렌드 정보를 가져올 수 없습니다.")
+                    
+                    # 🆕 Agent 응답도 함께 표시
+                    st.markdown("---")
+                    st.subheader("🤖 AI Agent 응답")
+                    st.info(result)
+
+                elif st.session_state.last_tool_used == "strategy" and st.session_state.tool_execution_status == "success":
+                    # 🎯 전략 도구가 성공적으로 실행된 경우
+                    col1, col2 = st.columns([1, 2])
+                    
                     with col1:
                         st.subheader("📊 추천 상품 및 재고")
-                        st.success("✅ 전략 생성 완료")
+                        # st.success("✅ 전략 생성 완료")
                         st.info(f"🎯 설정된 유사도 임계값: {similarity_threshold:.2f}")
                         
-                        # 🔧 수정: 안전한 세션 상태 확인
+                        # 재고 정보 표시
                         inventory_info = st.session_state.get('inventory_info', {})
                         if inventory_info:
                             total_matches = 0
@@ -618,32 +839,45 @@ with tabs[2]:
                     with col2:
                         st.subheader("🎯 AI 추천 전략")
                         
-                        # 🔧 수정: 안전한 세션 상태 확인
                         strategy_result = st.session_state.get('strategy_result', '전략 정보 없음')
                         if strategy_result and strategy_result != '전략 정보 없음':
-                            st.text(strategy_result)  # write 대신 text 사용
-
-                elif "ERROR" in result:
-                    # 오류 처리
-                    st.error(f"❌ 처리 중 오류: {result}")
+                            st.markdown(strategy_result)
+                        else:
+                            st.info("전략을 생성할 수 없습니다.")
                     
-                    # 대안 처리
-                    st.info("🔄 대안 방법으로 처리 중...")
-                    if question_type == "weather":
-                        weather_info, trend_info = get_weather_and_trends(user_question)
-                        st.write("**날씨 정보:**")
-                        st.write(weather_info)
+                    # 🆕 Agent 응답도 함께 표시
+                    st.markdown("---")
+                    st.subheader("🤖 AI Agent 응답")
+                    st.info(result)
+
+                elif st.session_state.tool_execution_status == "error":
+                    # ❌ 도구 실행 중 오류가 발생한 경우
+                    st.error(f"❌ {st.session_state.last_tool_used} 도구 실행 중 오류 발생")
+                    st.write("**Agent 응답:**")
+                    st.write(result)
+                    
+                    # 대안 처리 제안
+                    st.info("🔄 다른 방법으로 시도해보세요:")
+                    st.write("- 질문을 다시 입력해보세요")
+                    st.write("- 유사도 임계값을 조정해보세요")
 
                 else:
-                    # 일반 응답
-                    st.subheader("💬 AI 응답")
+                    # 🤖 도구를 사용하지 않고 일반 응답한 경우 또는 예상치 못한 경우
+                    st.subheader("🤖 AI Agent 응답")
                     st.write(result)
+                    
+                    # 🔧 디버깅 정보 (개발 중에만 표시)
+                    if st.session_state.last_tool_used:
+                        st.info(f"사용된 도구: {st.session_state.last_tool_used} | 상태: {st.session_state.tool_execution_status}")
 
             except Exception as e:
-                st.error(f"❌ 실행 중 오류: {str(e)}")
+                st.error(f"❌ Agent 실행 중 오류: {str(e)}")
                 
-                # 최종 대안: Agent 없이 직접 처리
+                # 최종 대안: 질문 유형 자동 판별 후 직접 처리
                 st.info("🔄 Agent 없이 직접 처리 중...")
+                
+                question_type = classify_question(user_question)
+                
                 try:
                     if question_type == "weather":
                         weather_info, trend_info = get_weather_and_trends(user_question)
@@ -655,6 +889,17 @@ with tabs[2]:
                         with col2:
                             st.subheader("🌦️ 날씨 정보")
                             st.write(weather_info)
+                            
+                    elif question_type == "trend":
+                        weather_info, trend_info = get_weather_and_trends(user_question)
+                        
+                        col1, col2 = st.columns([1, 2])
+                        with col1:
+                            st.subheader("📊 트렌드 분석")
+                            st.info("직접 처리 모드")
+                        with col2:
+                            st.subheader("📈 트렌드 정보")
+                            st.write(trend_info)
                             
                     elif question_type == "strategy":
                         weather_info, trend_info = get_weather_and_trends(user_question)
@@ -672,6 +917,206 @@ with tabs[2]:
                             
                 except Exception as final_error:
                     st.error(f"최종 처리도 실패: {str(final_error)}")
+
+##########수정 전 :    
+    # if st.button("🚀 AI Agent 실행", type="primary") and user_question:
+    #     with st.spinner("AI Agent가 작업 중입니다..."):
+            
+    #         # 🔧 개선: 질문 유형 미리 판별하여 직접 도구 호출
+    #         question_type = classify_question(user_question)
+            
+    #         try:
+    #             # # ❌ 기존 방식 (제거)
+    #             # if question_type == "weather":
+    #             #     # 날씨 도구 직접 호출
+    #             #     result = weather_tool(user_question)
+    #             # elif question_type == "trend":
+    #             #     # 날씨 도구 직접 호출
+    #             #     result = trend_tool(user_question)             
+                    
+    #             # else:  # strategy
+    #             #     # 전략 도구 직접 호출
+    #             #     result = strategy_tool(user_question)
+
+    #             # ✅ 새로운 방식 (진짜 Agent 사용)
+    #             result = agent.run(user_question)  # 🤖 LangChain Agent가 자동으로 도구 선택
+    #             print(f"Agent 결과: {result}")
+                
+                
+    #             # 🔧 결과에 따른 UI 표시
+    #             if result == "WEATHER_SUCCESS":
+    #                 # 🔧 개선: 더 구체적인 날씨 정보 표시
+    #                 col1, col2 = st.columns([1, 2])
+                    
+    #                 with col1:
+    #                     st.subheader("🌤️ 날씨 분석 요약")
+    #                     st.success("✅ 날씨 정보 조회 완료")
+    #                     st.info("🤖 AI가 상품 기획에 맞게 날씨를 분석했습니다.")
+                        
+    #                     # 🆕 추가: 간단한 날씨 지표
+    #                     if 'weather_result' in st.session_state:
+    #                         weather_text = st.session_state.weather_result
+    #                         # 간단한 키워드 추출로 지표 표시
+    #                         if "비" in weather_text or "강수" in weather_text:
+    #                             st.metric("☔", "우천 예상", "우산/우비 수요 ↑")
+    #                         elif "맑" in weather_text or "화창" in weather_text:
+    #                             st.metric("☀️", "맑음 예상", "야외활동 상품 수요 ↑")
+    #                         elif "추위" in weather_text or "한파" in weather_text:
+    #                             st.metric("🥶", "추위 예상", "방한 상품 수요 ↑")
+    #                         elif "더위" in weather_text or "폭염" in weather_text:
+    #                             st.metric("🔥", "더위 예상", "쿨링 상품 수요 ↑")
+                    
+    #                 with col2:
+    #                     st.subheader("🌦️ 상세 날씨 정보 및 상품 기획 인사이트")
+                        
+    #                     weather_result = st.session_state.get('weather_result', '날씨 정보 없음')
+    #                     if weather_result and weather_result != '날씨 정보 없음':
+    #                         # 🔧 개선: markdown으로 포맷팅하여 더 보기 좋게
+    #                         st.markdown(weather_result)
+    #                     else:
+    #                         st.info("상세한 날씨 정보를 가져올 수 없습니다.")
+                        
+    #             elif result == "TREND_SUCCESS":
+    #                 # 🔧 개선: 더 구체적인 트렌드 정보 표시
+    #                 col1, col2 = st.columns([1, 2])
+                    
+    #                 with col1:
+    #                     st.subheader("📊 트렌드 분석 요약")
+    #                     st.success("✅ 트렌드 정보 조회 완료")
+    #                     st.info("🤖 AI가 홈쇼핑에 맞게 트렌드를 분석했습니다.")
+                        
+    #                     # 🆕 추가: 트렌드 지표
+    #                     if 'trend_result' in st.session_state:
+    #                         trend_text = st.session_state.trend_result
+    #                         # 간단한 키워드 분석으로 지표 표시
+    #                         if "급상승" in trend_text:
+    #                             st.metric("🚀", "급상승 트렌드", "빠른 대응 필요")
+    #                         if "인기" in trend_text or "HOT" in trend_text:
+    #                             st.metric("🔥", "인기 트렌드", "마케팅 포인트 활용")
+    #                         if "세대" in trend_text or "연령" in trend_text:
+    #                             st.metric("👥", "세대별 트렌드", "타겟팅 전략 수립")
+
+    #                 with col2:
+    #                     st.subheader("📈 상세 트렌드 정보 및 상품 기획 활용")
+                        
+    #                     trend_result = st.session_state.get('trend_result', '트렌드 정보 없음')
+    #                     if trend_result and trend_result != '트렌드 정보 없음':
+    #                         # 🔧 개선: markdown으로 포맷팅하여 더 보기 좋게
+    #                         st.markdown(trend_result)
+    #                     else:
+    #                         st.info("상세한 트렌드 정보를 가져올 수 없습니다.")                                
+    #             # if result == "WEATHER_SUCCESS":
+    #             #     st.subheader("🌦️ 상세 날씨 정보")                    
+    #             #     # 🔧 수정: 안전한 세션 상태 확인
+    #             #     weather_result = st.session_state.get('weather_result', '날씨 정보 없음')
+    #             #     if weather_result and weather_result != '날씨 정보 없음':
+    #             #         st.markdown("**날씨 정보:**")
+    #             #         st.text(weather_result)  # markdown 대신 text 사용 (더 안전)
+                        
+    #             # elif result == "TREND_SUCCESS":
+    #             #     st.subheader("🌦️ 트렌드 정보")
+    #             #     trend_result = st.session_state.get('trend_result', '트렌드 정보 없음')
+    #             #     if trend_result and trend_result != '트렌드 정보 없음':
+    #             #         st.markdown("**관련 트렌드:**")
+    #             #         # 트렌드 정보 길이 제한
+    #             #         if len(trend_result) > 300:
+    #             #             trend_result = trend_result[:300] + "..."
+    #             #         st.text(trend_result)
+
+    #             elif result == "STRATEGY_SUCCESS":
+    #                 col1, col2 = st.columns([1, 2])                    
+    #                 with col1:
+    #                     st.subheader("📊 추천 상품 및 재고")
+    #                     st.success("✅ 전략 생성 완료")
+    #                     st.info(f"🎯 설정된 유사도 임계값: {similarity_threshold:.2f}")
+                        
+    #                     # 🔧 수정: 안전한 세션 상태 확인
+    #                     inventory_info = st.session_state.get('inventory_info', {})
+    #                     if inventory_info:
+    #                         total_matches = 0
+    #                         total_products = len(inventory_info)
+                            
+    #                         for gpt_name, matches in inventory_info.items():
+    #                             st.write(f"**{gpt_name}**")
+                                
+    #                             if matches and len(matches) > 0:
+    #                                 try:
+    #                                     if matches[0][1] > 0:
+    #                                         for name, qty in matches:
+    #                                             if qty > 0:
+    #                                                 st.write(f"   ✅ {name} (재고: {qty}개)")
+    #                                                 total_matches += 1
+    #                                             else:
+    #                                                 st.write(f"   ❌ {name} (품절)")
+    #                                     else:
+    #                                         st.write(f"   ❌ 매칭된 상품 없음")
+    #                                 except (IndexError, TypeError):
+    #                                     st.write(f"   ❌ 매칭된 상품 없음")
+    #                             else:
+    #                                 st.write(f"   ❌ 매칭된 상품 없음")
+                            
+    #                         # 매칭 성공률
+    #                         success_rate = (total_matches / total_products * 100) if total_products > 0 else 0
+    #                         st.markdown("---")
+    #                         st.metric("📈 매칭 성공률", f"{success_rate:.1f}%")
+                    
+    #                 with col2:
+    #                     st.subheader("🎯 AI 추천 전략")
+                        
+    #                     # 🔧 수정: 안전한 세션 상태 확인
+    #                     strategy_result = st.session_state.get('strategy_result', '전략 정보 없음')
+    #                     if strategy_result and strategy_result != '전략 정보 없음':
+    #                         st.text(strategy_result)  # write 대신 text 사용
+
+    #             elif "ERROR" in result:
+    #                 # 오류 처리
+    #                 st.error(f"❌ 처리 중 오류: {result}")
+                    
+    #                 # 대안 처리
+    #                 st.info("🔄 대안 방법으로 처리 중...")
+    #                 if question_type == "weather":
+    #                     weather_info, trend_info = get_weather_and_trends(user_question)
+    #                     st.write("**날씨 정보:**")
+    #                     st.write(weather_info)
+
+    #             else:
+    #                 # 일반 응답
+    #                 st.subheader("💬 AI 응답")
+    #                 st.write(result)
+
+    #         except Exception as e:
+    #             st.error(f"❌ 실행 중 오류: {str(e)}")
+                
+    #             # 최종 대안: Agent 없이 직접 처리
+    #             st.info("🔄 Agent 없이 직접 처리 중...")
+    #             try:
+    #                 if question_type == "weather":
+    #                     weather_info, trend_info = get_weather_and_trends(user_question)
+                        
+    #                     col1, col2 = st.columns([1, 2])
+    #                     with col1:
+    #                         st.subheader("🌤️ 날씨 분석")
+    #                         st.info("직접 처리 모드")
+    #                     with col2:
+    #                         st.subheader("🌦️ 날씨 정보")
+    #                         st.write(weather_info)
+                            
+    #                 elif question_type == "strategy":
+    #                     weather_info, trend_info = get_weather_and_trends(user_question)
+    #                     inventory_info = product_name_extract(user_question, weather_info, trend_info, similarity_threshold)
+    #                     final_prompt = generate_strategic(user_question, weather_info, trend_info, inventory_info)
+    #                     response = llm.invoke(final_prompt)
+                        
+    #                     col1, col2 = st.columns([1, 2])
+    #                     with col1:
+    #                         st.subheader("📊 상품 분석")
+    #                         st.info("직접 처리 모드")
+    #                     with col2:
+    #                         st.subheader("🎯 전략")
+    #                         st.write(response.content)
+                            
+    #             except Exception as final_error:
+    #                 st.error(f"최종 처리도 실패: {str(final_error)}")
 
                 
 # 사이드바 - 시스템 상태
